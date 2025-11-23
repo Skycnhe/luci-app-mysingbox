@@ -1,0 +1,109 @@
+name: Compile My Custom Plugin
+
+on:
+  workflow_dispatch: # 允许手动点击按钮触发
+  push:
+    paths:
+      - 'luci-app-mysingbox/**' # 当修改插件源码时自动触发
+
+env:
+  # 1. 【非常重要】SDK 下载地址
+  # 务必去 openwrt.org 下载和你路由器固件架构一致的 SDK
+  # 下面是 x86/64 的示例，如果你是 ARM (如红米AX6000)，必须换！
+  SDK_URL: https://downloads.openwrt.org/releases/23.05.3/targets/rockchip/armv8/openwrt-sdk-23.05.3-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+
+  # 2. 你的插件包名 (必须和 Makefile 里的 PKG_NAME 一致)
+  PACKAGE_NAME: luci-app-mysingbox
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        # 安装编译 OpenWrt 所需的基础环境
+        # 特别加入了 golang-go，因为 Sing-box 核心需要 Go 语言编译
+        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
+        gettext git java-propose-classpath libelf-dev libncurses5-dev \
+        libncursesw5-dev libssl-dev python3 python3-distutils python3-setuptools \
+        rsync subversion swig time xsltproc zlib1g-dev wget unzip upx git-core \
+        golang-go
+
+    - name: Download and Setup SDK
+      run: |
+        echo "Downloading SDK..."
+        wget -O sdk.tar.xz ${{ env.SDK_URL }}
+        mkdir sdk
+        tar -xJf sdk.tar.xz -C sdk --strip-components=1
+        cd sdk
+        
+        # 更新官方 feeds，获取基础库 (如 luci-base, curl, jq)
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: Import Packages
+      run: |
+        cd sdk/package
+        
+        # === 动作 A: 导入 Sing-box 核心源码 ===
+        # 你的插件依赖 sing-box 核心，但 SDK 自带的可能太老。
+        # 这里我们从第三方库 (kenzok8) 拉取 sing-box 核心的编译规则
+        git clone --depth 1 https://github.com/kenzok8/small-package temp_repo
+        # 我们只把 sing-box 这个文件夹拿出来，其他的不要，避免冲突
+        cp -r temp_repo/sing-box .
+        rm -rf temp_repo
+        
+        # === 动作 B: 导入你自己写的插件源码 ===
+        # $GITHUB_WORKSPACE 是你仓库的根目录
+        # 我们把你上传的 luci-app-mysingbox 复制到 SDK 的 package 目录
+        echo "Copying custom plugin source..."
+        cp -r $GITHUB_WORKSPACE/luci-app-mysingbox ./
+        
+        echo "Package directory content:"
+        ls -l
+
+    - name: Update Feeds & Install Go
+      run: |
+        cd sdk
+        # 再次更新 feeds 以识别新加入的包
+        ./scripts/feeds install -a
+        
+        # 确保 Go 环境配置正确 (Sing-box 编译需要)
+        export PATH=$PATH:/usr/local/go/bin
+
+    - name: Compile Plugins
+      run: |
+        cd sdk
+        make defconfig
+        
+        echo "=== Start Compiling ==="
+        
+        # 1. 先编译 sing-box 核心 (因为它是依赖项，通常会自动编译，但显式编译更稳妥)
+        # V=s 表示输出详细日志，便于排查错误
+        make package/sing-box/compile V=s
+        
+        # 2. 编译你的自定义插件
+        make package/${{ env.PACKAGE_NAME }}/compile V=s
+
+    - name: Collect IPK Files
+      run: |
+        cd sdk
+        mkdir -p output
+        
+        # 查找并复制生成的 IPK 文件
+        # 我们需要复制 sing-box 核心 以及 你的插件
+        find bin -name "*.ipk" -exec cp -n {} output/ \;
+        
+        echo "=== Result ==="
+        ls -l output/
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: My-Custom-Singbox-IPK
+        path: sdk/output/*.ipk
