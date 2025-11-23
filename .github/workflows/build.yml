@@ -50,22 +50,22 @@ jobs:
       run: |
         cd sdk/package
         
-        # === 动作 A: 导入 Sing-box 核心源码 ===
-        # 你的插件依赖 sing-box 核心，但 SDK 自带的可能太老。
-        # 这里我们从第三方库 (kenzok8) 拉取 sing-box 核心的编译规则
+        # 1. 导入 Sing-box 核心 (保持不变)
         git clone --depth 1 https://github.com/kenzok8/small-package temp_repo
-        # 我们只把 sing-box 这个文件夹拿出来，其他的不要，避免冲突
         cp -r temp_repo/sing-box .
         rm -rf temp_repo
         
-        # === 动作 B: 导入你自己写的插件源码 ===
-        # $GITHUB_WORKSPACE 是你仓库的根目录
-        # 我们把你上传的 luci-app-mysingbox 复制到 SDK 的 package 目录
-        echo "Copying custom plugin source..."
-        cp -r $GITHUB_WORKSPACE/luci-app-mysingbox ./
+        # 2. 导入你的自定义插件 (这里改了！！！)
+        # 创建一个存放你插件的文件夹
+        mkdir ${{ env.PACKAGE_NAME }}
         
-        echo "Package directory content:"
-        ls -l
+        # 使用 rsync 复制仓库根目录的所有文件到插件目录
+        # --exclude 'sdk' 非常重要！防止把正在运行的 SDK 目录自己复制进自己，导致无限循环
+        # --exclude '.git' 排除 git 文件
+        rsync -av --exclude 'sdk' --exclude '.git' --exclude '.github' $GITHUB_WORKSPACE/ ${{ env.PACKAGE_NAME }}/
+        
+        echo "=== Check Directory Content ==="
+        ls -l ${{ env.PACKAGE_NAME }}
 
     - name: Update Feeds & Install Go
       run: |
