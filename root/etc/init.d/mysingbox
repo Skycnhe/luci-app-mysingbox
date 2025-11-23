@@ -1,58 +1,72 @@
+#!/bin/sh /etc/rc.common
 
-{
-  "log": {
-    "level": "info",
-    "timestamp": true
-  },
-  "dns": {
-    "servers": [
-      {"tag": "google", "address": "8.8.8.8", "detour": "proxy"},
-      {"tag": "local", "address": "223.5.5.5", "detour": "direct"}
-    ],
-    "rules": [
-      {"outbound": "any", "server": "local"}
-    ]
-  },
-  "inbounds": [
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen": "0.0.0.0",
-      "listen_port": 2080,
-      "set_system_proxy": false
-    },
-    {
-      "type": "tproxy",
-      "tag": "tproxy-in",
-      "listen": "::",
-      "listen_port": 7893
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    },
-    {
-      "type": "selector",
-      "tag": "proxy",
-      "outbounds": ["auto", "direct"]
-    },
-    {
-      "type": "urltest",
-      "tag": "auto",
-      "outbounds": []
-    }
-  ],
-  "route": {
-    "rules": [
-      {"protocol": "dns", "outbound": "dns-out"},
-      {"clash_mode": "Direct", "outbound": "direct"},
-      {"clash_mode": "Global", "outbound": "proxy"}
-    ]
-  }
+START=99
+USE_PRO_CD=1
+
+CONF="mysingbox"
+PROG="/usr/bin/sing-box"
+WORK_DIR="/usr/share/mysingbox"
+RUN_DIR="/var/etc/mysingbox"
+CONFIG_FILE="$RUN_DIR/config.json"
+TEMPLATE_FILE="$WORK_DIR/template.json"
+
+start_service() {
+    config_load "$CONF"
+    local enabled
+    config_get_bool enabled global enabled 0
+    [ "$enabled" -eq 1 ] || return 0
+
+    local sub_url
+    config_get sub_url global sub_url
+
+    mkdir -p "$RUN_DIR"
+
+    # =========================================================
+    # 核心逻辑：生成配置
+    # =========================================================
+    if [ -z "$sub_url" ]; then
+        echo "Error: No subscription URL provided."
+        return 1
+    fi
+
+    echo "Downloading and converting configuration..."
+    
+    # 这里的逻辑是：利用在线转换 API，直接把订阅链接转换成 Sing-box 的 JSON 格式
+    # 你可以替换 backend 参数为其他转换后端
+    # 这里的 target=singbox 是关键
+    
+    CONV_API="https://api.v1.mk/sub?target=singbox&url=$(echo -n $sub_url | jq -sRr @uri)&config=$(echo -n 'https://raw.githubusercontent.com/acl4ssr/acl4ssr/master/Clash/config/ACL4SSR_Online_Full.ini' | jq -sRr @uri)"
+    
+    # 下载配置
+    curl -s -o "$CONFIG_FILE" "$CONV_API"
+
+    if [ ! -s "$CONFIG_FILE" ]; then
+        echo "Error: Failed to download configuration."
+        return 1
+    fi
+
+    # (可选) 如果你一定要用本地 template.json，你需要用 jq 把下载下来的 outbounds 提取出来，
+    # 拼接到本地 template.json 里。这里为了演示简单，直接使用了下载下来的完整配置。
+
+    # =========================================================
+    # 启动 Sing-box
+    # =========================================================
+    procd_open_instance
+    procd_set_param command "$PROG" run -c "$CONFIG_FILE"
+    
+    # 设置资源限制和自动重启
+    procd_set_param limits core="unlimited"
+    procd_set_param respawn ${respawn_threshold:-3600} ${respawn_timeout:-5} ${respawn_retry:-5}
+    
+    # 把日志输出到系统日志
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    
+    procd_close_instance
+    
+    echo "MySingBox started!"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "mysingbox"
 }
